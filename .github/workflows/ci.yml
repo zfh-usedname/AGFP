@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: aquasecurity/trivy-action@0.28.0
+      - uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -59,6 +59,10 @@ jobs:
     name: Dependency review
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    # 依赖审查要求仓库开启 Dependency graph（Settings → Security analysis），
+    # 这只有 admin 能开。开启之前此 job 必然失败，故先设 continue-on-error 不阻塞；
+    # admin 开启后请删掉下面这一行，让它成为硬闸门。
+    continue-on-error: true
     permissions:
       contents: read
       pull-requests: write # 在 PR 里贴审查摘要
