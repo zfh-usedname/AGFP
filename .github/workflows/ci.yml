@@ -1,0 +1,84 @@
+# CI 闸门：每个 PR 必须全绿才能合并（合并规则需仓库 admin 在 Settings → Branches
+# 里把下面各 job 名设为 required status check，否则只是“建议”而非“强制”）。
+#
+# 参考 Lumie-platform/ci.yml 的结构，但 Lumie 只有 typecheck + test；
+# 这里按要求加了三道安全检查，且都与技术栈无关，现在就能跑：
+#   secrets-scan       gitleaks —— 扫整个 git 历史，防 API key / 私钥被提交
+#   vuln-scan          Trivy —— 扫依赖清单与配置文件里的已知漏洞 / 错配
+#   dependency-review  GitHub 依赖审查 —— PR 新引入的依赖若带高危漏洞或不合规许可证则拒绝
+#
+# build-test 一栏：等 AGFP 技术栈确定后补（Node → pnpm typecheck/test；
+# Python → ruff + pytest；……）。CodeQL 也在那时一并开启，空仓库跑不了。
+name: CI
+
+on:
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  secrets-scan:
+    name: Secrets scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 全历史，否则只扫最后一个 commit
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  vuln-scan:
+    name: Vulnerability scan (Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig,secret
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # 在 PR 里贴审查摘要
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: always
+
+  # ── 构建 / 测试 ────────────────────────────────────────────────
+  # 技术栈确定后在这里加 job，并把它加进分支保护的 required checks。
+  # 例（Node/pnpm，和 Lumie 一致）：
+  #   build-test:
+  #     runs-on: ubuntu-latest
+  #     steps:
+  #       - uses: actions/checkout@v4
+  #       - uses: pnpm/action-setup@v4
+  #       - uses: actions/setup-node@v4
+  #         with: { node-version: 22, cache: pnpm }
+  #       - run: pnpm install --frozen-lockfile
+  #       - run: pnpm -r typecheck
+  #       - run: pnpm -r test

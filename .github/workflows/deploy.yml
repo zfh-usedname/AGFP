@@ -1,0 +1,61 @@
+# 自动部署：push 到 main（即 PR 合并后）→ SSH 进香港服务器 → 同步代码 → docker compose 重建 → 健康检查。
+#
+# 与 Lumie-platform/deploy.yml 同一套思路（SSH 上机部署），差别：
+#   - Lumie 先把镜像推到阿里云 ACR 再拉；AGFP 直接在服务器上 build，少一套镜像仓库凭据。
+#   - Lumie 用 release 分支触发；AGFP 按要求 main 合并即部署。
+#
+# 需要的仓库 Secrets（已由 YukiOvOb 写入，2026-09-09）：
+#   DEPLOY_HOST      156.226.176.180（香港机）
+#   DEPLOY_PORT      22000
+#   DEPLOY_USER      root
+#   DEPLOY_SSH_KEY   专用私钥，对应服务器 authorized_keys 里 github-actions-deploy@agfp
+#
+# 服务器侧约定（scripts/deploy.sh 实现）：
+#   代码目录 /opt/agfp，Docker Compose 启动，容器只绑 127.0.0.1:8789，
+#   由 nginx 以 https://<域名> 反代对外。域名与证书就绪前，部署照样进行，只是没有对外入口。
+#
+# 注意：CI 闸门（ci.yml）和本工作流是并列的，不是串联。“合并前必须全绿”靠分支保护
+# 强制；一旦 PR 合并进 main，本工作流就会部署。不要直接 push main 绕过 PR。
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: deploy (main → HK)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          port: ${{ secrets.DEPLOY_PORT }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 15m
+          script: |
+            set -euo pipefail
+            APP_DIR=/opt/agfp
+            REPO=https://github.com/${{ github.repository }}.git
+            # 首次部署：仓库还不在服务器上，先克隆；之后只做硬同步（.env、data/ 不受影响）
+            if [ ! -d "$APP_DIR/.git" ]; then
+              git clone --branch main "$REPO" "$APP_DIR"
+            fi
+            cd "$APP_DIR"
+            git fetch origin main
+            git reset --hard "${{ github.sha }}"
+            echo "==> HEAD: $(git log --oneline -1)"
+            bash scripts/deploy.sh
