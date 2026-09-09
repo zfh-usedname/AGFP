@@ -59,16 +59,27 @@ jobs:
     name: Dependency review
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    # 依赖审查要求仓库开启 Dependency graph（Settings → Security analysis），
-    # 这只有 admin 能开。开启之前此 job 必然失败，故先设 continue-on-error 不阻塞；
-    # admin 开启后请删掉下面这一行，让它成为硬闸门。
-    continue-on-error: true
+    # 依赖审查要求仓库开启 Dependency graph（Settings → Code security），只有 admin 能开。
+    # 这里先探测：没开 → 绿色跳过并打提示，不阻塞；一开启 → 自动成为硬闸门，无需改文件。
     permissions:
       contents: read
       pull-requests: write # 在 PR 里贴审查摘要
     steps:
+      - name: Probe dependency graph
+        id: probe
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh api "repos/${{ github.repository }}/dependency-graph/sbom" >/dev/null 2>&1; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Dependency review skipped::仓库未开启 Dependency graph，admin 请到 Settings → Code security 开启后此检查自动生效"
+          fi
       - uses: actions/checkout@v4
+        if: steps.probe.outputs.enabled == 'true'
       - uses: actions/dependency-review-action@v4
+        if: steps.probe.outputs.enabled == 'true'
         with:
           fail-on-severity: high
           comment-summary-in-pr: always
